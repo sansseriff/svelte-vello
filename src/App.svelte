@@ -38,15 +38,15 @@
 
     cvs.addEventListener("mousedown", (e) => {
       const rect = cvs.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+      const x = (e.clientX - rect.left) * dpr;
+      const y = (e.clientY - rect.top) * dpr;
       vello.handle_mouse_down(x, y);
     });
 
     cvs.addEventListener("mousemove", (e) => {
       const rect = cvs.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+      const x = (e.clientX - rect.left) * dpr;
+      const y = (e.clientY - rect.top) * dpr;
       vello.handle_mouse_move(x, y);
     });
 

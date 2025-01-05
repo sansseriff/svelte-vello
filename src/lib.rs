@@ -229,29 +229,6 @@ impl VelloContext {
         let height = self.canvas.height();
         let shapes = self.shapes.clone();
 
-        console_log!("rendering");
-
-        // wasm_bindgen_futures::spawn_local(async move {
-        //     // Create surface
-        //     let surface = {
-        //         let mut render_cx_guard = render_cx.lock().unwrap();
-        //         render_cx_guard
-        //             .create_surface(
-        //                 wgpu::SurfaceTarget::Canvas(canvas),
-        //                 width,
-        //                 height,
-        //                 wgpu::PresentMode::AutoVsync,
-        //             )
-        //             .await
-        //             .expect("Failed to create surface")
-        //     };
-
-        console_log!("surface created");
-
-        // Setup renderer
-        // let render_cx_guard = render_cx.lock().unwrap();
-        // let device_handle = &render_cx_guard.devices[&self.state.surface.dev_id];
-
         // Build scene
         let mut scene = Scene::new();
         for shape in shapes {
@@ -294,7 +271,7 @@ impl VelloContext {
                 &scene,
                 &surface_texture,
                 &RenderParams {
-                    base_color: Color::WHITE,
+                    base_color: Color::rgba8(240, 240, 240, 255),
                     width,
                     height,
                     antialiasing_method: AaConfig::Msaa8,
