@@ -1,7 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { greet, main } from "../pkg/svelte_vello";
-  import { add, setup_vello } from "../pkg/svelte_vello";
+  import { add } from "../pkg/svelte_vello";
+  // import { VelloContext } from "../pkg/svelte_vello";
+
+  import { VelloContext } from "../pkg/svelte_vello";
+
+  let vello: VelloContext | null = null;
 
   async function run() {
     const result = add(1, 2);
@@ -11,16 +16,43 @@
 
   run();
 
-  onMount(() => {
-    const canvas = document.getElementById("base_canvas") as HTMLCanvasElement;
+  onMount(async () => {
+    const cvs = document.getElementById("base_canvas") as HTMLCanvasElement;
     const dpr = window.devicePixelRatio || 1;
 
     // Set actual size in memory
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
+    const rect = cvs.getBoundingClientRect();
+    cvs.width = rect.width * dpr;
+    cvs.height = rect.height * dpr;
 
-    setup_vello("base_canvas");
+    console.log("before creating context");
+    let vello = await VelloContext.create("base_canvas");
+
+    console.log("after creating context");
+
+    // Add some shapes
+    vello.add_rectangle(100, 100, 200, 150, 255, 0, 0, 255); // Red rectangle
+    vello.add_circle(400, 300, 50, 0, 0, 255, 255); // Blue circle
+
+    // const canvas = document.getElementById("canvas_id") as HTMLCanvasElement;
+
+    cvs.addEventListener("mousedown", (e) => {
+      const rect = cvs.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      vello.handle_mouse_down(x, y);
+    });
+
+    cvs.addEventListener("mousemove", (e) => {
+      const rect = cvs.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      vello.handle_mouse_move(x, y);
+    });
+
+    cvs.addEventListener("mouseup", () => {
+      vello.handle_mouse_up();
+    });
   });
 </script>
 

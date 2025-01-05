@@ -1,19 +1,22 @@
 mod utils;
 
-use vello::util::RenderContext;
+use vello::util::{RenderContext, RenderSurface};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
 use std::num::NonZeroUsize;
 use vello::{
-    kurbo::{Affine, Circle},
+    kurbo::{Affine, Circle, Rect},
     peniko::{Color, Fill},
     *,
 };
 
-// use vello::peniko::color:
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 use wgpu;
+
+use web_sys::Window;
 
 #[wasm_bindgen]
 extern "C" {
@@ -52,134 +55,256 @@ fn main() -> Result<(), JsValue> {
     Ok(())
 }
 
+#[derive(Clone)]
+pub struct Shape {
+    kind: ShapeKind,
+    x: f64,
+    y: f64,
+    color: Color,
+}
+
+#[derive(Clone)]
+enum ShapeKind {
+    Rectangle { width: f64, height: f64 },
+    Circle { radius: f64 },
+}
+
+impl Shape {
+    fn contains(&self, px: f64, py: f64) -> bool {
+        match &self.kind {
+            ShapeKind::Rectangle { width, height } => {
+                px >= self.x && px <= self.x + width && py >= self.y && py <= self.y + height
+            }
+            ShapeKind::Circle { radius } => {
+                let dx = self.x - px;
+                let dy = self.y - py;
+                (dx * dx + dy * dy).sqrt() <= *radius
+            }
+        }
+    }
+}
+
+struct RenderState<'s> {
+    // SAFETY: We MUST drop the surface before the `window`, so the fields
+    // must be in this order
+    surface: RenderSurface<'s>,
+    window: Window,
+}
+
 #[wasm_bindgen]
-pub fn setup_vello(canvas_id: &str) -> Result<(), JsValue> {
-    // Get the existing canvas element
-    let window = web_sys::window().unwrap();
-    let document = window.document().unwrap();
-    let canvas = document
-        .get_element_by_id(canvas_id)
-        .unwrap()
-        .dyn_into::<HtmlCanvasElement>()
-        .unwrap();
+pub struct VelloContext {
+    shapes: Vec<Shape>,
+    selected_shape: Option<usize>,
+    drag_start_x: f64,
+    drag_start_y: f64,
+    canvas: HtmlCanvasElement,
+    render_cx: RenderContext,
+    state: RenderState<'static>,
+    renderer: Renderer,
+}
 
-    wasm_bindgen_futures::spawn_local(async move {
+//added recently. Need to use this to keep track of RenderSurface... Maybe window too?
+
+#[wasm_bindgen]
+impl VelloContext {
+    #[wasm_bindgen]
+    pub async fn create(canvas_id: &str) -> Result<VelloContext, JsValue> {
+        let window = web_sys::window().unwrap();
+        let document = window.document().unwrap();
+        let canvas = document
+            .get_element_by_id(canvas_id)
+            .unwrap()
+            .dyn_into::<HtmlCanvasElement>()
+            .unwrap();
+
         let mut render_cx = RenderContext::new();
-        // let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        //     backends: wgpu::Backends::BROWSER_WEBGPU,
-        //     ..Default::default()
-        // });
-
-        // render_cx.instance.request_adapter(options);
-
-        // Get canvas dimensions
-        let width = canvas.width() as u32;
-        let height = canvas.height() as u32;
-
-        // https://github.com/gfx-rs/wgpu/discussions/2893
-        // if I didn't have "rust-analyzer.cargo.target": "wasm32-unknown-unknown" in my .vscode/settings.json,
-        // then I would have to use the cfg macro below inside a {} block to avoid the error
-        // #[cfg(target_arch = "wasm32")]
-        let surface_target = wgpu::SurfaceTarget::Canvas(canvas);
+        let width = canvas.width();
+        let height = canvas.height();
 
         let surface = render_cx
-            .create_surface(surface_target, width, height, wgpu::PresentMode::AutoVsync)
-            .await;
-
-        if let Ok(surface) = surface {
-            console_log!("Surface created successfully");
-
-            let device_handle = &render_cx.devices[surface.dev_id];
-
-            // let device = render_cx.devices[0].device;
-            // let queue = render_cx.devices[0].queue;
-
-            // // Request adapter and setup device/queue
-            // let adapter = wgpu::util::initialize_adapter_from_env_or_default(&instance, None)
-            //     .await
-            //     .ok_or("Failed to find adapter")?;
-
-            // let surface_caps = surface.get_capabilities(surface.format);
-
-            // let id = surface.dev_id;
-
-            // Create renderer
-            let mut renderer = Renderer::new(
-                &device_handle.device,
-                RendererOptions {
-                    surface_format: Some(surface.format),
-                    use_cpu: false,
-                    antialiasing_support: AaSupport::all(),
-                    num_init_threads: NonZeroUsize::new(1),
-                },
+            .create_surface(
+                wgpu::SurfaceTarget::Canvas(canvas.clone()),
+                width,
+                height,
+                wgpu::PresentMode::AutoVsync,
             )
-            .expect("Failed to create renderer");
-            console_log!("Renderer created successfully");
+            .await
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
-            // Create and draw scene
-            let mut scene = Scene::new();
-            scene.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                Color::rgba8(242, 140, 168, 255),
-                None,
-                &Circle::new(((width as f32) / 2.0, (height as f32) / 2.0), 120.0),
-            );
+        let render_state = RenderState {
+            surface,
+            window: window,
+        };
+        // hmm interesting. I move stuff into the struct, and then I
+        // can't access the stuff outside of the struct anymore.
 
-            console_log!("Scene created successfully");
+        let id = render_state.surface.dev_id;
 
-            let surface_texture = surface
-                .surface
-                .get_current_texture()
-                .expect("Failed to get current texture");
+        let renderer = Renderer::new(
+            &render_cx.devices[id].device,
+            RendererOptions {
+                surface_format: Some(render_state.surface.format),
+                use_cpu: false,
+                antialiasing_support: AaSupport::all(),
+                num_init_threads: NonZeroUsize::new(1),
+            },
+        )
+        .expect("Failed to create renderer");
 
-            renderer
-                .render_to_surface(
-                    &device_handle.device,
-                    &device_handle.queue,
-                    &scene,
-                    &surface_texture,
-                    &RenderParams {
-                        base_color: Color::BLACK, // Background color
-                        width,
-                        height,
-                        antialiasing_method: AaConfig::Area,
-                    },
-                )
-                .expect("Failed to render to surface");
-        } else {
-            console_log!("Failed to create surface");
+        console_log!("renderer created");
+
+        let context = VelloContext {
+            shapes: Vec::new(),
+            selected_shape: None,
+            drag_start_x: 0.0,
+            drag_start_y: 0.0,
+            canvas,
+            render_cx,
+            state: render_state,
+            renderer,
+        };
+
+        Ok(context)
+    }
+
+    pub fn add_rectangle(
+        &mut self,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        r: u8,
+        g: u8,
+        b: u8,
+        a: u8,
+    ) {
+        self.shapes.push(Shape {
+            kind: ShapeKind::Rectangle { width, height },
+            x,
+            y,
+            color: Color::rgba8(r, g, b, a),
+        });
+        self.render();
+    }
+
+    pub fn add_circle(&mut self, x: f64, y: f64, radius: f64, r: u8, g: u8, b: u8, a: u8) {
+        self.shapes.push(Shape {
+            kind: ShapeKind::Circle { radius },
+            x,
+            y,
+            color: Color::rgba8(r, g, b, a),
+        });
+        self.render();
+    }
+
+    pub fn handle_mouse_down(&mut self, x: f64, y: f64) {
+        self.selected_shape = self.shapes.iter().position(|shape| shape.contains(x, y));
+        if self.selected_shape.is_some() {
+            self.drag_start_x = x;
+            self.drag_start_y = y;
+        }
+    }
+
+    pub fn handle_mouse_move(&mut self, x: f64, y: f64) {
+        if let Some(idx) = self.selected_shape {
+            let dx = x - self.drag_start_x;
+            let dy = y - self.drag_start_y;
+
+            self.shapes[idx].x += dx;
+            self.shapes[idx].y += dy;
+
+            self.drag_start_x = x;
+            self.drag_start_y = y;
+
+            self.render();
+        }
+    }
+
+    pub fn handle_mouse_up(&mut self) {
+        self.selected_shape = None;
+    }
+
+    fn render(&mut self) {
+        let width = self.canvas.width();
+        let height = self.canvas.height();
+        let shapes = self.shapes.clone();
+
+        console_log!("rendering");
+
+        // wasm_bindgen_futures::spawn_local(async move {
+        //     // Create surface
+        //     let surface = {
+        //         let mut render_cx_guard = render_cx.lock().unwrap();
+        //         render_cx_guard
+        //             .create_surface(
+        //                 wgpu::SurfaceTarget::Canvas(canvas),
+        //                 width,
+        //                 height,
+        //                 wgpu::PresentMode::AutoVsync,
+        //             )
+        //             .await
+        //             .expect("Failed to create surface")
+        //     };
+
+        console_log!("surface created");
+
+        // Setup renderer
+        // let render_cx_guard = render_cx.lock().unwrap();
+        // let device_handle = &render_cx_guard.devices[&self.state.surface.dev_id];
+
+        // Build scene
+        let mut scene = Scene::new();
+        for shape in shapes {
+            match shape.kind {
+                ShapeKind::Rectangle { width, height } => {
+                    scene.fill(
+                        Fill::NonZero,
+                        Affine::IDENTITY,
+                        shape.color,
+                        None,
+                        &Rect::new(shape.x, shape.y, shape.x + width, shape.y + height),
+                    );
+                }
+                ShapeKind::Circle { radius } => {
+                    scene.fill(
+                        Fill::NonZero,
+                        Affine::IDENTITY,
+                        shape.color,
+                        None,
+                        &Circle::new((shape.x, shape.y), radius),
+                    );
+                }
+            }
         }
 
-        // match canvas {
-        //     Some(element) => {
-        //         let canvas = element.dyn_into::<HtmlCanvasElement>().unwrap();
-        //         console_log!("got it");
+        // Render to surface
+        let surface_texture = self
+            .state
+            .surface
+            .surface
+            .get_current_texture()
+            .expect("Failed to get current texture");
 
-        //         let mut render_cx = RenderContext::new();
+        let id = self.state.surface.dev_id;
 
-        //         // // Get the canvas size
-        //         // let width = canvas.width();
-        //         // let height = canvas.height();
+        self.renderer
+            .render_to_surface(
+                &self.render_cx.devices[id].device,
+                &self.render_cx.devices[id].queue,
+                &scene,
+                &surface_texture,
+                &RenderParams {
+                    base_color: Color::WHITE,
+                    width,
+                    height,
+                    antialiasing_method: AaConfig::Msaa8,
+                },
+            )
+            .expect("Failed to render to surface");
 
-        //         // // Create surface directly from canvas
-        //         // let surface = render_cx
-        //         //     .create_surface_from_canvas(&canvas, width, height, wgpu::PresentMode::AutoVsync)
-        //         //     .await?;
-
-        //         // // Setup your rendering state and loop here
-        //         // let render_state = RenderState { canvas, surface };
-
-        //         // Start your render loop...
-        //     }
-        //     None => {
-        //         web_sys::console::log_1(&"failed".into());
-        //         return Err(JsValue::from_str("Failed to get canvas element"));
-        //     }
-        // }
-    });
-
-    Ok(())
+        surface_texture.present();
+        // });
+    }
 }
 
 #[wasm_bindgen]
