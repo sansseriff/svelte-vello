@@ -1,8 +1,11 @@
 mod utils;
 
+use leptos::prelude::Read;
+use skrifa::raw::tables::variations::Tuple;
 use vello::util::{RenderContext, RenderSurface};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
+// use web_sys::VideoEncoder;
 
 use std::num::NonZeroUsize;
 use vello::{
@@ -11,8 +14,16 @@ use vello::{
     *,
 };
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+// use reactive_graph::create_signal;
+
+// use leptos::*;
+use leptos::prelude::Get;
+use leptos::prelude::Set;
+
+use reactive_graph::signal::{signal, ReadSignal, WriteSignal};
+
+// use std::collections::VecDeque;
+// use std::sync::{Arc, Mutex};
 
 use wgpu;
 
@@ -55,32 +66,137 @@ fn main() -> Result<(), JsValue> {
     Ok(())
 }
 
-#[derive(Clone)]
-pub struct Shape {
-    kind: ShapeKind,
-    x: f64,
-    y: f64,
-    color: Color,
+pub struct Node {
+    pub x: IrSignal,
+    pub y: IrSignal,
 }
 
-#[derive(Clone)]
-enum ShapeKind {
-    Rectangle { width: f64, height: f64 },
-    Circle { radius: f64 },
-}
-
-impl Shape {
-    fn contains(&self, px: f64, py: f64) -> bool {
-        match &self.kind {
-            ShapeKind::Rectangle { width, height } => {
-                px >= self.x && px <= self.x + width && py >= self.y && py <= self.y + height
-            }
-            ShapeKind::Circle { radius } => {
-                let dx = self.x - px;
-                let dy = self.y - py;
-                (dx * dx + dy * dy).sqrt() <= *radius
-            }
+impl Node {
+    pub fn new(x: f64, y: f64) -> Self {
+        Self {
+            x: IrSignal::new(x),
+            y: IrSignal::new(y),
         }
+    }
+
+    // fn x(&self) -> &IrSignal {
+    //     &self.x
+    // }
+    // fn y(&self) -> &IrSignal {
+    //     &self.y
+    // }
+}
+
+// Define base Shape trait
+pub trait Shape {
+    // fn new(x: f64, y: f64, color: Color) -> Self;
+    fn contains(&self, x: f64, y: f64) -> bool;
+    fn draw(&self, scene: &mut Scene);
+    fn node(&self) -> &Node;
+}
+
+pub struct IrSignal {
+    pub get: ReadSignal<f64>,
+    pub set: WriteSignal<f64>,
+}
+
+impl IrSignal {
+    fn new(value: f64) -> Self {
+        let (get, set) = signal(value);
+        Self { get, set }
+    }
+
+    fn get(&self) -> f64 {
+        self.get.get()
+    }
+
+    fn set(&self, value: f64) {
+        self.set.set(value);
+    }
+}
+
+pub struct IrRectangle {
+    pub node: Node,
+    pub width: IrSignal,
+    pub height: IrSignal,
+    pub color: Color,
+}
+
+impl IrRectangle {
+    pub fn new(x: f64, y: f64, width: f64, height: f64, color: Color) -> Self {
+        Self {
+            node: Node::new(x, y),
+            width: IrSignal::new(width),
+            height: IrSignal::new(height),
+            color,
+        }
+    }
+}
+
+impl Shape for IrRectangle {
+    fn node(&self) -> &Node {
+        &self.node
+    }
+
+    fn contains(&self, px: f64, py: f64) -> bool {
+        px >= self.node.x.get()
+            && px <= self.node.x.get() + self.width.get()
+            && py >= self.node.y.get()
+            && py <= self.node.y.get() + self.height.get()
+    }
+
+    fn draw(&self, scene: &mut Scene) {
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            self.color,
+            None,
+            &Rect::new(
+                self.node.x.get(),
+                self.node.y.get(),
+                self.node.x.get() + self.width.get(),
+                self.node.y.get() + self.height.get(),
+            ),
+        );
+    }
+}
+
+// Circle implementation
+pub struct IrCircle {
+    pub node: Node,
+    pub radius: IrSignal,
+    pub color: Color,
+}
+
+impl IrCircle {
+    pub fn new(x: f64, y: f64, radius: f64, color: Color) -> Self {
+        Self {
+            node: Node::new(x, y),
+            radius: IrSignal::new(radius),
+            color,
+        }
+    }
+}
+
+impl Shape for IrCircle {
+    fn contains(&self, px: f64, py: f64) -> bool {
+        let dx = self.node.x.get() - px;
+        let dy = self.node.y.get() - py;
+        (dx * dx + dy * dy).sqrt() <= self.radius.get()
+    }
+
+    fn draw(&self, scene: &mut Scene) {
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            self.color,
+            None,
+            &Circle::new((self.node.x.get(), self.node.y.get()), self.radius.get()),
+        );
+    }
+
+    fn node(&self) -> &Node {
+        &self.node
     }
 }
 
@@ -93,7 +209,7 @@ struct RenderState<'s> {
 
 #[wasm_bindgen]
 pub struct VelloContext {
-    shapes: Vec<Shape>,
+    shapes: Vec<Box<dyn Shape>>,
     selected_shape: Option<usize>,
     drag_start_x: f64,
     drag_start_y: f64,
@@ -178,22 +294,23 @@ impl VelloContext {
         b: u8,
         a: u8,
     ) {
-        self.shapes.push(Shape {
-            kind: ShapeKind::Rectangle { width, height },
+        self.shapes.push(Box::new(IrRectangle::new(
             x,
             y,
-            color: Color::rgba8(r, g, b, a),
-        });
+            width,
+            height,
+            Color::rgba8(r, g, b, a),
+        )));
         self.render();
     }
 
     pub fn add_circle(&mut self, x: f64, y: f64, radius: f64, r: u8, g: u8, b: u8, a: u8) {
-        self.shapes.push(Shape {
-            kind: ShapeKind::Circle { radius },
+        self.shapes.push(Box::new(IrCircle::new(
             x,
             y,
-            color: Color::rgba8(r, g, b, a),
-        });
+            radius,
+            Color::rgba8(r, g, b, a),
+        )));
         self.render();
     }
 
@@ -210,8 +327,17 @@ impl VelloContext {
             let dx = x - self.drag_start_x;
             let dy = y - self.drag_start_y;
 
-            self.shapes[idx].x += dx;
-            self.shapes[idx].y += dy;
+            self.shapes[idx]
+                .node()
+                .x
+                .set(self.shapes[idx].node().x.get() + dx);
+
+            self.shapes[idx]
+                .node()
+                .y
+                .set(self.shapes[idx].node().y.get() + dy);
+
+            // self.shapes[idx].set_p
 
             self.drag_start_x = x;
             self.drag_start_y = y;
@@ -227,31 +353,12 @@ impl VelloContext {
     fn render(&mut self) {
         let width = self.canvas.width();
         let height = self.canvas.height();
-        let shapes = self.shapes.clone();
+        // let shapes = self.shapes.clone();
 
         // Build scene
         let mut scene = Scene::new();
-        for shape in shapes {
-            match shape.kind {
-                ShapeKind::Rectangle { width, height } => {
-                    scene.fill(
-                        Fill::NonZero,
-                        Affine::IDENTITY,
-                        shape.color,
-                        None,
-                        &Rect::new(shape.x, shape.y, shape.x + width, shape.y + height),
-                    );
-                }
-                ShapeKind::Circle { radius } => {
-                    scene.fill(
-                        Fill::NonZero,
-                        Affine::IDENTITY,
-                        shape.color,
-                        None,
-                        &Circle::new((shape.x, shape.y), radius),
-                    );
-                }
-            }
+        for shape in &self.shapes {
+            shape.draw(&mut scene);
         }
 
         // Render to surface
