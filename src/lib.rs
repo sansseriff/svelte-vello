@@ -1,6 +1,6 @@
 mod utils;
 
-use leptos::prelude::Read;
+use leptos::{context, prelude::Read};
 use skrifa::raw::tables::variations::Tuple;
 use vello::util::{RenderContext, RenderSurface};
 use wasm_bindgen::prelude::*;
@@ -22,8 +22,14 @@ use leptos::prelude::Set;
 
 use reactive_graph::signal::{signal, ReadSignal, WriteSignal};
 
+use lazy_static::lazy_static;
+
 // use std::collections::VecDeque;
-// use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use wgpu;
 
@@ -69,6 +75,10 @@ fn main() -> Result<(), JsValue> {
 pub struct Node {
     pub x: IrSignal,
     pub y: IrSignal,
+    pub scale_x: IrSignal,
+    pub scale_y: IrSignal,
+    pub rotation: IrSignal,
+    pub following: Option<(usize, (f64, f64))>, // (target_index, initial_offset)
 }
 
 impl Node {
@@ -76,15 +86,53 @@ impl Node {
         Self {
             x: IrSignal::new(x),
             y: IrSignal::new(y),
+            scale_x: IrSignal::new(1.0),
+            scale_y: IrSignal::new(1.0),
+            rotation: IrSignal::new(0.0),
+            following: None,
         }
     }
 
-    // fn x(&self) -> &IrSignal {
-    //     &self.x
-    // }
-    // fn y(&self) -> &IrSignal {
-    //     &self.y
-    // }
+    pub fn start_following(&mut self, other: &Node, target_index: usize) {
+        // Calculate initial offset in target's local space
+        let dx = self.x.get() - other.x.get();
+        let dy = self.y.get() - other.y.get();
+
+        // Store target and offset
+        self.following = Some((target_index, (dx, dy)));
+
+        // Initial update
+        self.update_transform(other);
+    }
+
+    pub fn update_transform(&mut self, target: &Node) {
+        if let Some((_, (dx, dy))) = self.following {
+            // Apply target's rotation to offset
+            let rot = target.rotation.get();
+            let cos_rot = rot.cos();
+            let sin_rot = rot.sin();
+
+            // Rotate and scale offset
+            let scaled_dx = dx * target.scale_x.get();
+            let scaled_dy = dy * target.scale_y.get();
+
+            let rotated_dx = scaled_dx * cos_rot - scaled_dy * sin_rot;
+            let rotated_dy = scaled_dx * sin_rot + scaled_dy * cos_rot;
+
+            // Set new position
+            self.x.set(target.x.get() + rotated_dx);
+            self.y.set(target.y.get() + rotated_dy);
+
+            // Match rotation and scale
+            self.rotation.set(target.rotation.get());
+            self.scale_x.set(target.scale_x.get());
+            self.scale_y.set(target.scale_y.get());
+        }
+    }
+
+    pub fn unfollow(&mut self) {
+        self.following = None;
+    }
 }
 
 // Define base Shape trait
@@ -221,6 +269,55 @@ pub struct VelloContext {
 
 //added recently. Need to use this to keep track of RenderSurface... Maybe window too?
 
+thread_local! {
+    static CONTEXT_REGISTRY: RefCell<HashMap<u32, Rc<RefCell<VelloContext>>>> = RefCell::new(HashMap::new());
+    static NEXT_CONTEXT_ID: RefCell<u32> = RefCell::new(0);
+}
+
+#[wasm_bindgen]
+pub struct JsShape {
+    index: usize,
+    context_id: u32,
+}
+
+#[wasm_bindgen]
+impl JsShape {
+    pub fn follow(&self, other: &JsShape) -> Result<(), JsValue> {
+        CONTEXT_REGISTRY.with(|registry| {
+            let registry = registry.borrow();
+            let context = registry.get(&self.context_id).ok_or("Context not found")?;
+            let mut context = context.borrow_mut();
+            if let (Some(shape1), Some(shape2)) = (
+                context.shapes.get_mut(self.index),
+                context.shapes.get(other.index),
+            ) {
+                shape1.node().start_following(shape2.node(), other.index);
+                context.render();
+                Ok(())
+            } else {
+                Err(JsValue::from_str("Shape not found"))
+            }
+        })
+    }
+
+    pub fn unfollow(&self) -> Result<(), JsValue> {
+        CONTEXT_REGISTRY.with(|registry| {
+            let registry = registry.borrow();
+            let context = registry.get(&self.context_id).ok_or("Context not found")?;
+
+            let mut context = context.borrow_mut();
+
+            if let Some(shape) = context.shapes.get_mut(self.index) {
+                shape.node().unfollow();
+                context.render();
+                Ok(())
+            } else {
+                Err(JsValue::from_str("Shape not found"))
+            }
+        })
+    }
+}
+
 #[wasm_bindgen]
 impl VelloContext {
     #[wasm_bindgen]
@@ -279,6 +376,20 @@ impl VelloContext {
             state: render_state,
             renderer,
         };
+
+        // Use thread_local registry
+        let id = NEXT_CONTEXT_ID.with(|next_id| {
+            let mut next_id = next_id.borrow_mut();
+            let id = *next_id;
+            *next_id += 1;
+            id
+        });
+
+        CONTEXT_REGISTRY.with(|registry| {
+            registry
+                .borrow_mut()
+                .insert(id, Rc::new(RefCell::new(context)));
+        });
 
         Ok(context)
     }
