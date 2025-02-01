@@ -1,7 +1,7 @@
 mod utils;
 
 use leptos::{context, prelude::Read};
-use skrifa::raw::tables::variations::Tuple;
+// use skrifa::raw::tables::variations::Tuple;
 use vello::util::{RenderContext, RenderSurface};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -22,7 +22,7 @@ use leptos::prelude::Set;
 
 use reactive_graph::signal::{signal, ReadSignal, WriteSignal};
 
-use lazy_static::lazy_static;
+// use lazy_static::lazy_static;
 
 // use std::collections::VecDeque;
 use std::collections::HashMap;
@@ -34,6 +34,8 @@ use std::rc::Rc;
 use wgpu;
 
 use web_sys::Window;
+
+use std::rc::Weak;
 
 #[wasm_bindgen]
 extern "C" {
@@ -140,7 +142,7 @@ pub trait Shape {
     // fn new(x: f64, y: f64, color: Color) -> Self;
     fn contains(&self, x: f64, y: f64) -> bool;
     fn draw(&self, scene: &mut Scene);
-    fn node(&self) -> &Node;
+    fn node(&mut self) -> &mut Node;
 }
 
 pub struct IrSignal {
@@ -182,8 +184,8 @@ impl IrRectangle {
 }
 
 impl Shape for IrRectangle {
-    fn node(&self) -> &Node {
-        &self.node
+    fn node(&mut self) -> &mut Node {
+        &mut self.node
     }
 
     fn contains(&self, px: f64, py: f64) -> bool {
@@ -243,8 +245,8 @@ impl Shape for IrCircle {
         );
     }
 
-    fn node(&self) -> &Node {
-        &self.node
+    fn node(&mut self) -> &mut Node {
+        &mut self.node
     }
 }
 
@@ -270,51 +272,97 @@ pub struct VelloContext {
 //added recently. Need to use this to keep track of RenderSurface... Maybe window too?
 
 thread_local! {
-    static CONTEXT_REGISTRY: RefCell<HashMap<u32, Rc<RefCell<VelloContext>>>> = RefCell::new(HashMap::new());
-    static NEXT_CONTEXT_ID: RefCell<u32> = RefCell::new(0);
+    // static CONTEXT_REGISTRY: RefCell<HashMap<u32, Rc<RefCell<VelloContext>>>> = RefCell::new(HashMap::new());
+    // static NEXT_CONTEXT_ID: RefCell<u32> = RefCell::new(0);
+    static ACTIVE_CONTEXT: RefCell<Option<Rc<RefCell<VelloContext>>>> = RefCell::new(None);
 }
 
 #[wasm_bindgen]
-pub struct JsShape {
-    index: usize,
-    context_id: u32,
+pub struct ShapeHandle {
+    id: usize,
+    #[wasm_bindgen(skip)]
+    context: Weak<RefCell<VelloContext>>,
 }
 
+// #[wasm_bindgen]
+// pub struct JsShape {
+//     index: usize,
+//     context_id: u32,
+// }
+
+// #[wasm_bindgen]
+// impl JsShape {
+//     pub fn follow(&self, other: &JsShape) -> Result<(), JsValue> {
+//         CONTEXT_REGISTRY.with(|registry| {
+//             let registry = registry.borrow();
+//             let context = registry.get(&self.context_id).ok_or("Context not found")?;
+//             let mut context = context.borrow_mut();
+//             if let (Some(shape1), Some(shape2)) = (
+//                 context.shapes.get_mut(self.index),
+//                 context.shapes.get(other.index),
+//             ) {
+//                 shape1.node().start_following(shape2.node(), other.index);
+//                 context.render();
+//                 Ok(())
+//             } else {
+//                 Err(JsValue::from_str("Shape not found"))
+//             }
+//         })
+//     }
+
+//     pub fn unfollow(&self) -> Result<(), JsValue> {
+//         CONTEXT_REGISTRY.with(|registry| {
+//             let registry = registry.borrow();
+//             let context = registry.get(&self.context_id).ok_or("Context not found")?;
+
+//             let mut context = context.borrow_mut();
+
+//             if let Some(shape) = context.shapes.get_mut(self.index) {
+//                 shape.node().unfollow();
+//                 context.render();
+//                 Ok(())
+//             } else {
+//                 Err(JsValue::from_str("Shape not found"))
+//             }
+//         })
+//     }
+// }
+
 #[wasm_bindgen]
-impl JsShape {
-    pub fn follow(&self, other: &JsShape) -> Result<(), JsValue> {
-        CONTEXT_REGISTRY.with(|registry| {
-            let registry = registry.borrow();
-            let context = registry.get(&self.context_id).ok_or("Context not found")?;
+impl ShapeHandle {
+    pub fn follow(&self, other: &ShapeHandle) -> Result<(), JsValue> {
+        if let Some(context) = self.context.upgrade() {
             let mut context = context.borrow_mut();
-            if let (Some(shape1), Some(shape2)) = (
-                context.shapes.get_mut(self.index),
-                context.shapes.get(other.index),
+            if let (Some(shape1_follower), Some(shape2_followed)) = (
+                context.shapes.get_mut(self.id),
+                context.shapes.get(other.id),
             ) {
-                shape1.node().start_following(shape2.node(), other.index);
+                shape1_follower
+                    .node()
+                    .start_following(shape2_followed.node(), other.id);
                 context.render();
                 Ok(())
             } else {
                 Err(JsValue::from_str("Shape not found"))
             }
-        })
+        } else {
+            Err(JsValue::from_str("Context no longer exists"))
+        }
     }
 
     pub fn unfollow(&self) -> Result<(), JsValue> {
-        CONTEXT_REGISTRY.with(|registry| {
-            let registry = registry.borrow();
-            let context = registry.get(&self.context_id).ok_or("Context not found")?;
-
+        if let Some(context) = self.context.upgrade() {
             let mut context = context.borrow_mut();
-
-            if let Some(shape) = context.shapes.get_mut(self.index) {
+            if let Some(shape) = context.shapes.get_mut(self.id) {
                 shape.node().unfollow();
                 context.render();
                 Ok(())
             } else {
                 Err(JsValue::from_str("Shape not found"))
             }
-        })
+        } else {
+            Err(JsValue::from_str("Context no longer exists"))
+        }
     }
 }
 
@@ -366,7 +414,7 @@ impl VelloContext {
 
         console_log!("renderer created");
 
-        let context = VelloContext {
+        let context = Rc::new(RefCell::new(VelloContext {
             shapes: Vec::new(),
             selected_shape: None,
             drag_start_x: 0.0,
@@ -375,23 +423,13 @@ impl VelloContext {
             render_cx,
             state: render_state,
             renderer,
-        };
+        }));
 
-        // Use thread_local registry
-        let id = NEXT_CONTEXT_ID.with(|next_id| {
-            let mut next_id = next_id.borrow_mut();
-            let id = *next_id;
-            *next_id += 1;
-            id
+        ACTIVE_CONTEXT.with(|active| {
+            *active.borrow_mut() = Some(context.clone());
         });
 
-        CONTEXT_REGISTRY.with(|registry| {
-            registry
-                .borrow_mut()
-                .insert(id, Rc::new(RefCell::new(context)));
-        });
-
-        Ok(context)
+        Ok(VelloContext::from(context))
     }
 
     pub fn add_rectangle(
@@ -404,25 +442,48 @@ impl VelloContext {
         g: u8,
         b: u8,
         a: u8,
-    ) {
+    ) -> ShapeHandle {
+        let id = self.shapes.len();
         self.shapes.push(Box::new(IrRectangle::new(
             x,
             y,
             width,
             height,
-            Color::rgba8(r, g, b, a),
+            Color::from_rgba8(r, g, b, a),
         )));
+
         self.render();
+
+        ShapeHandle {
+            id,
+            context: Rc::downgrade(&ACTIVE_CONTEXT.with(|ctx| ctx.borrow().clone().unwrap())),
+        }
     }
 
-    pub fn add_circle(&mut self, x: f64, y: f64, radius: f64, r: u8, g: u8, b: u8, a: u8) {
+    pub fn add_circle(
+        &mut self,
+        x: f64,
+        y: f64,
+        radius: f64,
+        r: u8,
+        g: u8,
+        b: u8,
+        a: u8,
+    ) -> ShapeHandle {
+        let id = self.shapes.len();
         self.shapes.push(Box::new(IrCircle::new(
             x,
             y,
             radius,
-            Color::rgba8(r, g, b, a),
+            Color::from_rgba8(r, g, b, a),
         )));
+
         self.render();
+
+        ShapeHandle {
+            id,
+            context: Rc::downgrade(&ACTIVE_CONTEXT.with(|ctx| ctx.borrow().clone().unwrap())),
+        }
     }
 
     pub fn handle_mouse_down(&mut self, x: f64, y: f64) {
@@ -489,7 +550,7 @@ impl VelloContext {
                 &scene,
                 &surface_texture,
                 &RenderParams {
-                    base_color: Color::rgba8(240, 240, 240, 255),
+                    base_color: Color::from_rgb8(240, 240, 240),
                     width,
                     height,
                     antialiasing_method: AaConfig::Msaa8,

@@ -18,11 +18,10 @@ wasm-bindgen = "0.2.84"
 # all the `std::fmt` and `std::panicking` infrastructure, so isn't great for
 # code size when deploying.
 console_error_panic_hook = { version = "0.1.7", optional = true }
-vello = "0.3.0"
+vello = "0.4.0"
 wasm-bindgen-futures = "0.4.49"
-reactive_graph = "0.1.3"
-leptos = "0.7.3"
-lazy_static = "1.5.0"
+reactive_graph = "0.1.4"
+leptos = "0.7.4"
 # web-sys = "0.3.76"
 
 [dependencies.web-sys]

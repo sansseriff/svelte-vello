@@ -31,8 +31,8 @@
     console.log("after creating context");
 
     // Add some shapes
-    vello.add_rectangle(100, 100, 200, 150, 255, 0, 0, 255); // Red rectangle
-    vello.add_circle(400, 300, 50, 0, 0, 255, 255); // Blue circle
+    vello.add_rectangle(100, 100, 200, 150, 255, 0, 0); // Red rectangle
+    vello.add_circle(400, 300, 50, 0, 0, 255); // Blue circle
 
     cvs.addEventListener("mousedown", (e) => {
       const rect = cvs.getBoundingClientRect();
