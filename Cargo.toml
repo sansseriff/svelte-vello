@@ -20,7 +20,7 @@ wasm-bindgen = "0.2.84"
 console_error_panic_hook = { version = "0.1.7", optional = true }
 vello = "0.4.0"
 wasm-bindgen-futures = "0.4.49"
-reactive_graph = "0.1.5"
+reactive_graph = "0.1.7"
 leptos = "0.7.5"
 # web-sys = "0.3.76"
 
